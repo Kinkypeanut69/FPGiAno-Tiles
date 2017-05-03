@@ -4,7 +4,12 @@
 #include "includes.h"
 #include "altera_up_avalon_character_lcd.h"
 #include "altera_up_avalon_parallel_port.h"
-#include "altera_up_avalon_video_pixel_buffer_dma.h"    // "VGA_Subsystem_VGA_Pixel_DMA"#include "altera_up_avalon_video_dma_controller.h"		// "VGA_Subsystem_Char_Buf_Subsystem_Char_Buf_DMA"#include "string.h"#include <os/alt_sem.h>/* Definition of Task Stacks */
+#include "altera_up_avalon_video_pixel_buffer_dma.h"    // "VGA_Subsystem_VGA_Pixel_DMA"#include "altera_up_avalon_video_dma_controller.h"		// "VGA_Subsystem_Char_Buf_Subsystem_Char_Buf_DMA"#include "string.h"#include <os/alt_sem.h>
+#include "sys/alt_stdio.h"
+#include "system.h"
+#include "Altera_UP_SD_Card_Avalon_Interface.h"
+#include "altera_avalon_pio_regs.h"
+/* Definition of Task Stacks */
 #define   TASK_STACKSIZE       2048
 OS_STK game_stk[TASK_STACKSIZE];
 
@@ -18,6 +23,11 @@ alt_up_video_dma_dev* vgachar;						//char buffer device
 /* create a message to be displayed on the VGA and LCD displays */
 char text_top_row[40] = "- FPGiAno Tiles! -\0";
 char text_bottom_row[40] = "-     Score:     -\0";
+char mode1[40] = "> Arcade <\0";
+char mode2[40] = "Disco\0";
+char mode3[40] = "Hardcore\0";
+char counter[40] = "\0";
+int nr = 0;
 void randomKeyPress();
 int tileID;
 
@@ -61,6 +71,36 @@ void randomKeyPress() {
 		}
 }
 
+void loadImage(){
+	volatile int i, j;
+	short att1=0, att2=0, att3=0, att;
+	short int handler;
+	int pixel;
+
+	for(i=239;i>=0;i=i-1){
+		for(j=0;j<320;j=j+1){
+			att1 = (unsigned char) alt_up_sd_card_read(handler);
+			att2 = (unsigned char) alt_up_sd_card_read(handler);
+			att3 = (unsigned char) alt_up_sd_card_read(handler);
+			pixel = ((att3>>3)<<11) | ((att2>>2)<<5) | (att1>>3);
+			VGA_box(j, i, j, i, pixel);
+		}
+	}
+}
+
+void VGA_box(int x1, int y1, int x2, int y2, int pixel_color){
+	int offset, row, col;
+	volatile short * pixel_buffer = (short *) 0x00000000; // VGA pixel buffer addr
+	for(row = y1; row <= y2; row++){
+		col = x1;
+		while(col <= x2){
+			offset = (row << 9) + col;
+			*(pixel_buffer + offset) = pixel_color;
+			++col;
+		}
+	}
+}
+
 void game(void* pdata) {
 	int x1 = 80, y1 = 0, x2 = 240, y2 = 240;
 	int x3 = 120, y3 = 0, x4 = 120, y4 = 240;
@@ -74,6 +114,7 @@ void game(void* pdata) {
 	int c1 = 0xFFFF;
 	int c2 = 0x9CD3;
 	int c3 = 0x1061;
+
 	int blockSelect;
 
 	while (1) {
@@ -150,6 +191,7 @@ void game(void* pdata) {
 				y5 = 0;
 				y52 = 0;
 				randomKeyPress();
+				nr++;
 			}
 
 			if (y6 > 240) {
@@ -158,6 +200,7 @@ void game(void* pdata) {
 				y6 = 0;
 				y62 = 0;
 				randomKeyPress();
+				nr++;
 			}
 			if (y7 > 240) {
 				blockSelect = rand() % 4;
@@ -165,6 +208,7 @@ void game(void* pdata) {
 				y7 = 0;
 				y72 = 0;
 				randomKeyPress();
+				nr++;
 			}
 			if (y8 > 240) {
 				blockSelect = rand() % 4;
@@ -172,14 +216,19 @@ void game(void* pdata) {
 				y8 = 0;
 				y82 = 0;
 				randomKeyPress();
+				nr++;
 			}
 			if (y9 > 240) {
 				blockSelect = rand() % 4;
 				x9 = (blockSelect * 40) + 80;
 				y9 = 0;
 				y92 = 0;
+				randomKeyPress();
+				nr++;
 			}
 			OSTimeDlyHMSM(0, 0, 0, 60);
+			sprintf(counter, "%d", nr);
+			alt_up_video_dma_draw_string(vgachar, counter, 67, 7, 0);
 		}
 	}
 }
@@ -212,6 +261,9 @@ int main(void) {
 
 	alt_up_video_dma_draw_string(vgachar, text_top_row, 1, 2, 0);
 	alt_up_video_dma_draw_string(vgachar, text_bottom_row, 61, 2, 0);
+	alt_up_video_dma_draw_string(vgachar, mode1, 3, 8, 0);
+	alt_up_video_dma_draw_string(vgachar, mode2, 3, 12, 0);
+	alt_up_video_dma_draw_string(vgachar, mode3, 3, 16, 0);
 
 	OSTaskCreateExt(game, NULL, (void *) &game_stk[TASK_STACKSIZE - 1],
 	game_PRIORITY, game_PRIORITY, game_stk, TASK_STACKSIZE, NULL, 0);
