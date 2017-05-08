@@ -11,3 +11,5 @@ create-this-app
 *.d
 Makefile
 *.project
+includes.h
+*.mk
