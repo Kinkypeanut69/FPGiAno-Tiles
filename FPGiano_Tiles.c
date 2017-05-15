@@ -4,18 +4,10 @@
 #include "includes.h"
 #include "altera_up_avalon_character_lcd.h"
 #include "altera_up_avalon_parallel_port.h"
-#include "altera_up_avalon_video_pixel_buffer_dma.h"    // "VGA_Subsystem_VGA_Pixel_DMA"#include "altera_up_avalon_video_dma_controller.h"		// "VGA_Subsystem_Char_Buf_Subsystem_Char_Buf_DMA"#include "string.h"
-#include <os/alt_sem.h>
-#include "sys/alt_stdio.h"
-#include "system.h"
-#include <altera_up_avalon_ps2.h>
-#include <altera_up_ps2_keyboard.h>
-#define DRAW_BOX alt_up_pixel_buffer_dma_draw_box
-#define DRAW_LINE alt_up_pixel_buffer_dma_draw_line
-#define CLRSCREEN alt_up_pixel_buffer_dma_clear_screen(vgapixel, 0)
+#include "altera_up_avalon_video_pixel_buffer_dma.h"    // "VGA_Subsystem_VGA_Pixel_DMA"#include "altera_up_avalon_video_dma_controller.h"		// "VGA_Subsystem_Char_Buf_Subsystem_Char_Buf_DMA"#include "string.h"#include <os/alt_sem.h>#include "sys/alt_stdio.h"#include "system.h"#include <altera_up_avalon_ps2.h>#include <altera_up_ps2_keyboard.h>#define DRAW_BOX alt_up_pixel_buffer_dma_draw_box#define DRAW_LINE alt_up_pixel_buffer_dma_draw_line#define CLRSCREEN alt_up_pixel_buffer_dma_clear_screen(vgapixel, 0)
 #define DRAW_STRING alt_up_video_dma_draw_string
 #define TILE_WIDTH 40
-#define TILE_HEIGHT 60
+#define TILE_HEIGHT 40
 #define DELAYVALUE 10
 
 /* Definition of Task Stacks */
@@ -80,8 +72,10 @@ int tileID;
 int white = 0xFFFF;
 int grey = 0x9CD3;
 int black = 0x1061;
-int block1_color, block2_color, block3_color, block4_color, block5_color;
-int block1_reset, block2_reset, block3_reset, block4_reset, block5_reset;
+int block1_color, block2_color, block3_color, block4_color, block5_color,
+		block6_color, block7_color;
+int block1_reset, block2_reset, block3_reset, block4_reset, block5_reset,
+		block6_reset, block7_reset;
 int screenHeight = 240;
 int screenWidth = 320;
 KB_CODE_TYPE *decode_mode;
@@ -98,6 +92,8 @@ int block2_x_left, block2_x_right, block2_y_top, block2_y_bottom;
 int block3_x_left, block3_x_right, block3_y_top, block3_y_bottom;
 int block4_x_left, block4_x_right, block4_y_top, block4_y_bottom;
 int block5_x_left, block5_x_right, block5_y_top, block5_y_bottom;
+int block6_x_left, block6_x_right, block6_y_top, block6_y_bottom;
+int block7_x_left, block7_x_right, block7_y_top, block7_y_bottom;
 
 void randomKeyPress();
 void game(void* pdata);
@@ -329,7 +325,7 @@ void hitDetect(int* color, int* reset) {
 void blockDetect() {
 	switch (state) {
 	case 1:
-		hitDetect(&block5_color, &block5_reset);
+		hitDetect(&block7_color, &block7_reset);
 		break;
 	case 2:
 		hitDetect(&block1_color, &block1_reset);
@@ -342,6 +338,12 @@ void blockDetect() {
 		break;
 	case 5:
 		hitDetect(&block4_color, &block4_reset);
+		break;
+	case 6:
+		hitDetect(&block5_color, &block5_reset);
+		break;
+	case 7:
+		hitDetect(&block6_color, &block6_reset);
 		break;
 	}
 }
@@ -477,9 +479,15 @@ void buttonDetect() {
 	case 5:
 		block5_reset = 0;
 		break;
+	case 6:
+		block6_reset = 0;
+		break;
+	case 7:
+		block7_reset = 0;
+		break;
 	}
 	state++;
-	if (state == 6) {
+	if (state == 8) {
 		state = 1;
 	}
 	randomKeyPress();
@@ -514,6 +522,14 @@ void startUpGame(void* pdata) {
 			blockMoveStartUp(&block5_x_left, &block5_x_right, &block5_y_top,
 					&block5_y_bottom, block5_color);
 		}
+		if (block5_y_bottom > TILE_HEIGHT) {
+			blockMoveStartUp(&block6_x_left, &block6_x_right, &block6_y_top,
+					&block6_y_bottom, block6_color);
+		}
+		if (block6_y_bottom > TILE_HEIGHT) {
+			blockMoveStartUp(&block7_x_left, &block7_x_right, &block7_y_top,
+					&block7_y_bottom, block7_color);
+		}
 
 		decode_scancode(ps2, decode_mode, &buf, &ascii);
 		if (*decode_mode == 2) {
@@ -543,6 +559,14 @@ void startUpGame(void* pdata) {
 				break;
 			case 5:
 				relevant_lane = (block5_x_left - (screenWidth * 0.25))
+						/ TILE_WIDTH;
+				break;
+			case 6:
+				relevant_lane = (block6_x_left - (screenWidth * 0.25))
+						/ TILE_WIDTH;
+				break;
+			case 7:
+				relevant_lane = (block7_x_left - (screenWidth * 0.25))
 						/ TILE_WIDTH;
 				break;
 			}
@@ -575,30 +599,48 @@ void game(void* pdata) {
 	block3_color = black;
 	block4_color = black;
 	block5_color = black;
+	block6_color = black;
+	block7_color = black;
 	block1_reset = 1;
 	block2_reset = 1;
 	block3_reset = 1;
 	block4_reset = 1;
 	block5_reset = 1;
+	block6_reset = 1;
+	block7_reset = 1;
 	block1_x_left = (blockSelect * TILE_WIDTH) + screenWidth * 0.25, block1_x_right =
 			block1_x_left + TILE_WIDTH, block1_y_top = screenTop, block1_y_bottom =
 			block1_y_top;
+
 	blockSelect = rand() % 4;
 	block2_x_left = (blockSelect * TILE_WIDTH) + screenWidth * 0.25, block2_x_right =
 			block2_x_left + TILE_WIDTH, block2_y_top = screenTop, block2_y_bottom =
 			block2_y_top;
+
 	blockSelect = rand() % 4;
 	block3_x_left = (blockSelect * TILE_WIDTH) + screenWidth * 0.25, block3_x_right =
 			block3_x_left + TILE_WIDTH, block3_y_top = screenTop, block3_y_bottom =
 			block3_y_top;
+
 	blockSelect = rand() % 4;
 	block4_x_left = (blockSelect * TILE_WIDTH) + screenWidth * 0.25, block4_x_right =
 			block4_x_left + TILE_WIDTH, block4_y_top = screenTop, block4_y_bottom =
 			block4_y_top;
+
 	blockSelect = rand() % 4;
 	block5_x_left = (blockSelect * TILE_WIDTH) + screenWidth * 0.25, block5_x_right =
 			block5_x_left + TILE_WIDTH, block5_y_top = screenTop, block5_y_bottom =
 			block5_y_top;
+
+	blockSelect = rand() % 4;
+	block6_x_left = (blockSelect * TILE_WIDTH) + screenWidth * 0.26, block6_x_right =
+			block6_x_left + TILE_WIDTH, block6_y_top = screenTop, block6_y_bottom =
+			block6_y_top;
+
+	blockSelect = rand() % 4;
+	block7_x_left = (blockSelect * TILE_WIDTH) + screenWidth * 0.27, block7_x_right =
+			block7_x_left + TILE_WIDTH, block7_y_top = screenTop, block7_y_bottom =
+			block7_y_top;
 
 	relevant_lane = (block1_x_left - (screenWidth * 0.25)) / TILE_WIDTH;
 
@@ -631,6 +673,10 @@ void game(void* pdata) {
 				&block4_y_bottom, block4_color);
 		blockMove(&block5_x_left, &block5_x_right, &block5_y_top,
 				&block5_y_bottom, block5_color);
+		blockMove(&block6_x_left, &block6_x_right, &block6_y_top,
+				&block6_y_bottom, block6_color);
+		blockMove(&block7_x_left, &block7_x_right, &block7_y_top,
+				&block7_y_bottom, block7_color);
 
 		blockReset(&block1_x_left, &block1_x_right, &block1_y_top,
 				&block1_y_bottom, &blockSelect, &block1_color, &block1_reset);
@@ -642,6 +688,10 @@ void game(void* pdata) {
 				&block4_y_bottom, &blockSelect, &block4_color, &block4_reset);
 		blockReset(&block5_x_left, &block5_x_right, &block5_y_top,
 				&block5_y_bottom, &blockSelect, &block5_color, &block5_reset);
+		blockReset(&block6_x_left, &block6_x_right, &block6_y_top,
+				&block6_y_bottom, &blockSelect, &block6_color, &block6_reset);
+		blockReset(&block7_x_left, &block7_x_right, &block7_y_top,
+				&block7_y_bottom, &blockSelect, &block7_color, &block7_reset);
 
 		decode_scancode(ps2, decode_mode, &buf, &ascii);
 		if (*decode_mode == 2) {
@@ -671,6 +721,14 @@ void game(void* pdata) {
 				break;
 			case 5:
 				relevant_lane = (block5_x_left - (screenWidth * 0.25))
+						/ TILE_WIDTH;
+				break;
+			case 6:
+				relevant_lane = (block6_x_left - (screenWidth * 0.25))
+						/ TILE_WIDTH;
+				break;
+			case 7:
+				relevant_lane = (block7_x_left - (screenWidth * 0.25))
 						/ TILE_WIDTH;
 				break;
 			}
