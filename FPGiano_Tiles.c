@@ -4,13 +4,7 @@
 #include "includes.h"
 #include "altera_up_avalon_character_lcd.h"
 #include "altera_up_avalon_parallel_port.h"
-#include "altera_up_avalon_video_pixel_buffer_dma.h"    // "VGA_Subsystem_VGA_Pixel_DMA"#include "altera_up_avalon_video_dma_controller.h"		// "VGA_Subsystem_Char_Buf_Subsystem_Char_Buf_DMA"#include "string.h"#include <os/alt_sem.h>#include "sys/alt_stdio.h"#include "system.h"#include <altera_up_avalon_ps2.h>#include <altera_up_ps2_keyboard.h>#define DRAW_BOX alt_up_pixel_buffer_dma_draw_box#define DRAW_LINE alt_up_pixel_buffer_dma_draw_line#define CLRSCREEN alt_up_pixel_buffer_dma_clear_screen(vgapixel, 0)
-#define DRAW_STRING alt_up_video_dma_draw_string
-#define TILE_WIDTH 40
-#define TILE_HEIGHT 40
-#define DELAYVALUE 10
-
-/* Definition of Task Stacks */
+#include "altera_up_avalon_video_pixel_buffer_dma.h"    // "VGA_Subsystem_VGA_Pixel_DMA"#include "altera_up_avalon_video_dma_controller.h"		// "VGA_Subsystem_Char_Buf_Subsystem_Char_Buf_DMA"#include "altera_up_avalon_parallel_port.h"#include "Altera_UP_SD_Card_Avalon_Interface.h"#include "altera_avalon_pio_regs.h"#include "string.h"#include <os/alt_sem.h>#include "sys/alt_stdio.h"#include "system.h"#include <altera_up_avalon_ps2.h>#include <altera_up_ps2_keyboard.h>#define DRAW_BOX alt_up_pixel_buffer_dma_draw_box#define DRAW_LINE alt_up_pixel_buffer_dma_draw_line#define DRAW_STRING alt_up_video_dma_draw_string#define TILE_WIDTH 40#define TILE_HEIGHT 40#define DELAYVALUE 10#define CLRSCREEN alt_up_pixel_buffer_dma_clear_screen(vgapixel, 0)#define SD_BUFFER_SIZE 512#define CREATE 0x02#define READ 0x04/* Definition of Task Stacks */
 #define   TASK_STACKSIZE       2048
 OS_STK game_stk[TASK_STACKSIZE];
 OS_STK startMenu_stk[TASK_STACKSIZE];
@@ -36,6 +30,7 @@ OS_EVENT *sem_startUp;
 alt_up_pixel_buffer_dma_dev* vgapixel;				//pixel buffer device
 alt_up_video_dma_dev* vgachar;						//char buffer device
 alt_up_ps2_dev *ps2;
+alt_up_parallel_port_dev *push_buttons_dev;
 
 /* create a message to be displayed on the VGA and LCD displays */
 char text_top_row[40] = "- FPGiAno Tiles! -\0";
@@ -63,12 +58,24 @@ char count3[40] = "3\0";
 char count2[40] = "2\0";
 char count1[40] = "1\0";
 char count0[40] = "0\0";
+char highscoreMsg[40] = "Highscores\0";
+char madeBy[40] = "Made by: BaMiTi\0";
+
+typedef struct scores {
+	char name[16];
+	char score[16];
+} scores;
+struct scores highscore1;
+struct scores highscore2;
+struct scores highscore3;
+struct scores highscore4;
 
 INT8U err;
-int speedUpFactor = 0.02;
+float speedUpFactor = 0.02;
 int scoreCounter = 1;
 int gamemodeSelect;
 int tileID;
+int highscorePlace;
 int white = 0xFFFF;
 int grey = 0x9CD3;
 int black = 0x1061;
@@ -82,8 +89,10 @@ KB_CODE_TYPE *decode_mode;
 alt_u8 buf;
 char ascii;
 int screenTop = 0;
+int startUpActive = 0;
 int blockSelect;
-float dly = DELAYVALUE;
+int highScoreReadIndex = 0;
+double dly = DELAYVALUE;
 int state = 1;
 int relevant_lane;
 int button1, button2, button3, button4;
@@ -100,7 +109,6 @@ void game(void* pdata);
 void countDownStart(void* pdata);
 void countDownPause(void* pdata);
 void blockMove(int* left, int* right, int* top, int* bottom, int color);
-void blockMoveStartUp(int* left, int* right, int* top, int* bottom, int color);
 void blockReset(int* left, int* right, int* top, int* bottom, int* blockSelect,
 		int* color, int* reset);
 void startUpGame(void* pdata);
@@ -108,6 +116,10 @@ void blockDetect();
 void hitDetect(int* color, int* reset);
 void buttonDetect();
 void endGame(void* pdata);
+void selectColor(int* color);
+void writeHighscore(struct scores highscore, char *file_name);
+void readHighscores(struct scores *highscore, char *file_name);
+void resetArray(char* array, int lenght);
 
 void customDelay(float dly) {
 	int i;
@@ -146,6 +158,10 @@ void randomKeyPress() {
 	} else {
 		x = 12 * tileID;
 	}
+	if (gamemodeSelect == 2) {
+		selectColor(&grey);
+		selectColor(&white);
+	}
 	//color current key grey
 	if (tileID == 0 || tileID == 3 || tileID == 8) {//tiles with black key to the right
 		DRAW_BOX(vgapixel, x, 0.75 * screenHeight, x + 7, screenHeight, grey,
@@ -159,6 +175,87 @@ void randomKeyPress() {
 		DRAW_BOX(vgapixel, x, 218, x + 10, screenHeight, grey, 0);
 		DRAW_BOX(vgapixel, x + 3, 0.75 * screenHeight, x + 7, screenHeight,
 				grey, 0);
+	}
+}
+
+//writes score and name to SD card
+void writeHighscore(struct scores highscore, char *file_name) {
+	char char_score[16], char_name[16];
+	int handler;
+	sprintf(char_name, "%s ", highscore.name);
+	sprintf(char_score, "%s ", highscore.score);
+	alt_up_sd_card_dev *sd_card_dev = alt_up_sd_card_open_dev(SD_CARD_NAME);
+	if (sd_card_dev != 0) {
+		if (alt_up_sd_card_is_Present()) {
+			if (alt_up_sd_card_is_FAT16()) {
+				handler = alt_up_sd_card_fopen(file_name, false);
+				if (handler < 0) {
+					printf("Problem creating file. Error %d\n", handler);
+				} else {
+
+					int index = 0;
+					printf("Writing to SD Card\n");
+					while (char_score[index] != '\0') {
+						alt_up_sd_card_write(handler, char_score[index]);
+						index++;
+					}
+					index = 0;
+					while (char_name[index] != '\0') {
+						alt_up_sd_card_write(handler, char_name[index]);
+						index++;
+					}
+					alt_up_sd_card_write(handler, ' ');
+					alt_up_sd_card_fclose(handler);
+				}
+			} else {
+				printf("SD Card is not FAT16");
+			}
+		} else {
+			printf("Insert SD Card\n");
+		}
+
+	}
+}
+
+//reads highscores on SD card and displays it on the screen
+void readHighscores(struct scores *highscore, char *file_name) {
+	int handler;
+	alt_up_sd_card_dev *sd_card_dev = alt_up_sd_card_open_dev(SD_CARD_NAME);
+	if (sd_card_dev != 0) {
+		if (alt_up_sd_card_is_Present()) {
+			if (alt_up_sd_card_is_FAT16()) {
+
+				handler = alt_up_sd_card_fopen(file_name, false);
+				if (handler < 0) {
+					printf("Error opening file %d \n", handler);
+				} else {
+					char buffer[128];
+					int j = -1;
+					int k = 0;
+					while (buffer[j] != -1) {
+						j++;
+						buffer[j] = alt_up_sd_card_read(handler);
+					}
+					buffer[j] = '\0';
+					j = 0;
+					while (buffer[j] != ' ') {
+						highscore->score[j] = buffer[j];
+						j++;
+					}
+					j++;
+					while (buffer[j] != ' ') {
+						highscore->name[k] = buffer[j];
+						j++;
+						k++;
+					}
+					alt_up_sd_card_fclose(handler);
+				}
+			} else {
+				printf("SD Card is not FAT16\n");
+			}
+		} else {
+			printf("Insert SD Card\n");
+		}
 	}
 }
 
@@ -180,6 +277,7 @@ void startMenu(void* pdata) {
 	DRAW_STRING(vgachar, mode1, 34, 36, 0);
 	DRAW_STRING(vgachar, mode2, 34, 41, 0);
 	DRAW_STRING(vgachar, mode3, 34, 46, 0);
+	DRAW_STRING(vgachar, madeBy, 65, 59, 0);
 
 	ps2 = alt_up_ps2_open_dev("/dev/PS2_Port");
 	alt_up_ps2_init(ps2);
@@ -191,22 +289,26 @@ void startMenu(void* pdata) {
 				DRAW_STRING(vgachar, arrowClr, 32, 41, 0);
 				DRAW_STRING(vgachar, arrowClr, 32, 46, 0);
 				gamemodeSelect = 1;
+				speedUpFactor = 0.02;
 				DRAW_STRING(vgachar, arrow, 32, 36, 0);
 			} else if (ascii == '2') {
 				DRAW_STRING(vgachar, arrowClr, 32, 36, 0);
 				DRAW_STRING(vgachar, arrowClr, 32, 46, 0);
 				gamemodeSelect = 2;
+				speedUpFactor = 0.02;
 				DRAW_STRING(vgachar, arrow, 32, 41, 0);
 			} else if (ascii == '3') {
 				DRAW_STRING(vgachar, arrowClr, 32, 36, 0);
 				DRAW_STRING(vgachar, arrowClr, 32, 41, 0);
 				gamemodeSelect = 3;
+				speedUpFactor = 0.3;
 				DRAW_STRING(vgachar, arrow, 32, 46, 0);
 			} else if (buf == 0x5A && gamemodeSelect) {
 				OSTaskCreateExt(countDownStart, NULL,
 						(void *) &countDownStart_stk[TASK_STACKSIZE - 1],
 						countDownStart_PRIORITY, countDownStart_PRIORITY,
-						countDownStart_stk, TASK_STACKSIZE, NULL, 0);
+						countDownStart_stk,
+						TASK_STACKSIZE, NULL, 0);
 				OSTaskDel(OS_PRIO_SELF);
 			}
 		}
@@ -228,6 +330,45 @@ void drawHUD() {
 		DRAW_STRING(vgachar, arrow, 1, 12, 0);
 	} else if (gamemodeSelect == 3) {
 		DRAW_STRING(vgachar, arrow, 1, 16, 0);
+	}
+}
+
+void selectColor(int* color) {
+	int colorSelect = rand() % 8;
+
+	switch (colorSelect) {
+	case 0:
+		//Midnight Blue
+		*color = 0x18CE;
+		break;
+	case 1:
+		//Red
+		*color = 0xF940;
+		break;
+	case 2:
+		//White
+		*color = 0xFFFF;
+		break;
+	case 3:
+		//Lime-Green
+		*color = 0x7FC0;
+		break;
+	case 4:
+		//Magenta
+		*color = 0xF01F;
+		break;
+	case 5:
+		//Cyan
+		*color = 0x7FF;
+		break;
+	case 6:
+		//Orange
+		*color = 0xFCC0;
+		break;
+	case 7:
+		//Yellow
+		*color = 0xFFE2;
+		break;
 	}
 }
 
@@ -299,8 +440,8 @@ void countDownStart(void* pdata) {
 
 void countDownPause(void* pdata) {
 	OSSemPend(sem_pause, 0, &err);
-	DRAW_BOX(vgapixel, 268, 92, 286, 111, 0xFFFF, 0);
-	DRAW_BOX(vgapixel, 269, 93, 285, 110, 0x1061, 0);
+	DRAW_BOX(vgapixel, 268, 92, 286, 111, white, 0);
+	DRAW_BOX(vgapixel, 269, 93, 285, 110, black, 0);
 	DRAW_STRING(vgachar, count3, 69, 25, 0);
 	OSTimeDlyHMSM(0, 0, 1, 100);
 	DRAW_STRING(vgachar, count2, 69, 25, 0);
@@ -377,9 +518,14 @@ void pauseMenu(void* pdata) {
 				OSTaskCreateExt(countDownPause, NULL,
 						(void *) &countDownPause_stk[TASK_STACKSIZE - 1],
 						countDownPause_PRIORITY, countDownPause_PRIORITY,
-						countDownPause_stk, TASK_STACKSIZE, NULL, 0);
+						countDownPause_stk,
+						TASK_STACKSIZE, NULL, 0);
 				OSTaskDel(OS_PRIO_SELF);
 			} else if (buf == 0x76) {
+				if (startUpActive == 1) {
+					OSSemPost(sem_startUp);
+					startUpActive = 0;
+				}
 				OSTaskDel(startUpGame_PRIORITY);
 				OSTaskDel(game_PRIORITY);
 				CLRSCREEN;
@@ -388,6 +534,8 @@ void pauseMenu(void* pdata) {
 				sprintf(counter, "%d", scoreCounter);
 				gamemodeSelect = 0;
 				dly = DELAYVALUE;
+				white = 0xFFFF;
+				grey = 0x9CD3;
 				OSTaskCreateExt(startMenu, NULL,
 						(void *) &startMenu_stk[TASK_STACKSIZE - 1],
 						startMenu_PRIORITY, startMenu_PRIORITY, startMenu_stk,
@@ -398,14 +546,98 @@ void pauseMenu(void* pdata) {
 	}
 }
 
+void resetArray(char* array, int lenght) {
+	for (int i = 0; i <= lenght; i++) {
+		array[i] = 0;
+	}
+}
+
 void endGame(void* pdata) {
-	DRAW_BOX(vgapixel, 8, 104, 70, 123, white, 0);
-	DRAW_BOX(vgapixel, 9, 105, 69, 122, black, 0);
+	char highscoreMsg1[40];
+	char highscoreMsg2[40];
+	char highscoreMsg3[40];
+	char highscoreName[16];
+	char highscoreEnterName[12];
+	char highscoreMsg4[40] = "Enter name\0";
+	int index = 0;
+	DRAW_BOX(vgapixel, 8, 104, 70, 128, white, 0);
+	DRAW_BOX(vgapixel, 9, 105, 69, 127, black, 0);
 	DRAW_STRING(vgachar, endGameMsg, 5, 28, 0);
 	DRAW_STRING(vgachar, pauseMsg24, 5, 42, 0);
 
+	readHighscores(&highscore1, "1.TXT");
+	readHighscores(&highscore2, "2.TXT");
+	readHighscores(&highscore3, "3.TXT");
+
+	sprintf(highscoreMsg1, "%s ", highscore1.score);
+	sprintf(highscoreMsg2, "%s ", highscore2.score);
+	sprintf(highscoreMsg3, "%s ", highscore3.score);
+	strcat(highscoreMsg1, highscore1.name);
+	strcat(highscoreMsg2, highscore2.name);
+	strcat(highscoreMsg3, highscore3.name);
+
+	DRAW_STRING(vgachar, highscoreMsg, 65, 23, 0);
+	DRAW_BOX(vgapixel, 250, 84, 310, 163, white, 0);
+	DRAW_BOX(vgapixel, 251, 85, 309, 162, black, 0);
+	DRAW_LINE(vgapixel, 250, 104, 309, 104, white, 0);
+	DRAW_STRING(vgachar, highscoreMsg1, 64, 29, 0);
+	DRAW_STRING(vgachar, highscoreMsg2, 64, 33, 0);
+	DRAW_STRING(vgachar, highscoreMsg3, 64, 37, 0);
+
 	ps2 = alt_up_ps2_open_dev("/dev/PS2_Port");
 	alt_up_ps2_init(ps2);
+
+	if (scoreCounter - 1 > atoi(highscore3.score)) {
+		DRAW_BOX(vgapixel, 250, 57, 310, 84, white, 0);
+		DRAW_BOX(vgapixel, 251, 58, 309, 83, black, 0);
+		DRAW_STRING(vgachar, highscoreMsg4, 65, 16, 0);
+		while (1) {
+			decode_scancode(ps2, decode_mode, &buf, &ascii);
+			if (*decode_mode == 1 || *decode_mode == 2) {
+				if (ascii >= 'A' && ascii <= 'Z') {
+					if (index == 7) highscoreEnterName[index-1] = ascii;
+					else highscoreEnterName[index] = ascii;
+					if (index < 7) index++;
+					DRAW_STRING(vgachar, highscoreEnterName, 65, 19, 0);
+				}
+				else if (buf == 102){
+					if(index > 0){
+							index--;
+						highscoreEnterName[index] = ' ';
+						DRAW_STRING(vgachar, highscoreEnterName, 65, 19, 0);
+					}
+				}
+				else if (buf == 0x5A) {
+					strcpy(highscoreName, highscoreEnterName);
+					resetArray(highscoreEnterName, 11);
+					sprintf(highscoreEnterName, "Submitted!");
+					DRAW_STRING(vgachar, highscoreEnterName, 65, 19, 0);
+					resetArray(highscoreEnterName, 11);
+					break;
+				}
+			}
+
+		}
+		if (scoreCounter - 1 > atoi(highscore1.score)) {
+			resetArray(highscore1.score, 15);
+			sprintf(highscore1.score, "%.4d", (scoreCounter - 1));
+			resetArray(highscore1.name, 15);
+			strcpy(highscore1.name, highscoreName);
+			writeHighscore(highscore1, "1.TXT");
+		} else if (scoreCounter - 1 > atoi(highscore2.score)) {
+			resetArray(highscore2.score, 15);
+			sprintf(highscore2.score, "%.4d", (scoreCounter - 1));
+			resetArray(highscore2.name, 15);
+			strcpy(highscore2.name, highscoreName);
+			writeHighscore(highscore2, "2.TXT");
+		} else {
+			resetArray(highscore3.score, 15);
+			sprintf(highscore3.score, "%.4d", (scoreCounter - 1));
+			resetArray(highscore3.name, 15);
+			strcpy(highscore3.name, highscoreName);
+			writeHighscore(highscore3, "3.TXT");
+		}
+	}
 
 	while (1) {
 		decode_scancode(ps2, decode_mode, &buf, &ascii);
@@ -416,6 +648,8 @@ void endGame(void* pdata) {
 				CLRSCREEN;
 				state = 1;
 				scoreCounter = 1;
+				white = 0xFFFF;
+				grey = 0x9CD3;
 				sprintf(counter, "%d", scoreCounter);
 				gamemodeSelect = 0;
 				dly = DELAYVALUE;
@@ -432,21 +666,10 @@ void endGame(void* pdata) {
 void blockMove(int *left, int *right, int *top, int *bottom, int color) {
 	if (*bottom - *top == TILE_HEIGHT) {
 		*top = *top + 1;
-		DRAW_LINE(vgapixel, *left + 1, *top - 1, *right - 1, *top - 1, white,
-				0);
+		DRAW_LINE(vgapixel, *left + 1, *top, *right - 1, *top, white, 0);
 	}
 	*bottom = *bottom + 1;
-	DRAW_BOX(vgapixel, *left + 1, *top, *right - 1, *bottom, color, 0);
-}
-
-void blockMoveStartUp(int *left, int *right, int *top, int *bottom, int color) {
-	if (*bottom - *top == TILE_HEIGHT) {
-		*top = *top + 1;
-		DRAW_LINE(vgapixel, *left + 1, *top - 1, *right - 1, *top - 1, white,
-				0);
-	}
-	*bottom = *bottom + 1;
-	DRAW_BOX(vgapixel, *left + 1, *top, *right - 1, *bottom, color, 0);
+	DRAW_BOX(vgapixel, *left + 1, *top + 1, *right - 1, *bottom - 1, color, 0);
 }
 
 void blockReset(int* left, int* right, int* top, int* bottom, int* blockSelect,
@@ -457,8 +680,16 @@ void blockReset(int* left, int* right, int* top, int* bottom, int* blockSelect,
 		*right = *left + TILE_WIDTH;
 		*top = 0;
 		*bottom = 0;
+
+		if (*reset == 1) {
+			OSTaskCreateExt(endGame, NULL,
+					(void *) &endGame_stk[TASK_STACKSIZE - 1],
+					endGame_PRIORITY, endGame_PRIORITY, endGame_stk,
+					TASK_STACKSIZE, NULL, 0);
+		}
 		*reset = 1;
 		*color = black;
+		dly = dly - (speedUpFactor * dly);
 	}
 }
 
@@ -493,41 +724,41 @@ void buttonDetect() {
 	randomKeyPress();
 	sprintf(counter, "%d", scoreCounter++);
 	DRAW_STRING(vgachar, counter, 67, 7, 0);
-	dly = dly - (speedUpFactor * dly);
 }
 
 void startUpGame(void* pdata) {
 	OSSemPend(sem_startUp, 0, &err);
-	while (block1_y_bottom < screenHeight) {
+	startUpActive = 1;
+	while (block1_y_bottom <= screenHeight) {
 		OSSemPend(sem_pause, 0, &err);
 		OSSemPost(sem_pause);
 
 		blockDetect();
 
-		blockMoveStartUp(&block1_x_left, &block1_x_right, &block1_y_top,
+		blockMove(&block1_x_left, &block1_x_right, &block1_y_top,
 				&block1_y_bottom, block1_color);
 		if (block1_y_bottom > TILE_HEIGHT) {
-			blockMoveStartUp(&block2_x_left, &block2_x_right, &block2_y_top,
+			blockMove(&block2_x_left, &block2_x_right, &block2_y_top,
 					&block2_y_bottom, block2_color);
 		}
 		if (block2_y_bottom > TILE_HEIGHT) {
-			blockMoveStartUp(&block3_x_left, &block3_x_right, &block3_y_top,
+			blockMove(&block3_x_left, &block3_x_right, &block3_y_top,
 					&block3_y_bottom, block3_color);
 		}
 		if (block3_y_bottom > TILE_HEIGHT) {
-			blockMoveStartUp(&block4_x_left, &block4_x_right, &block4_y_top,
+			blockMove(&block4_x_left, &block4_x_right, &block4_y_top,
 					&block4_y_bottom, block4_color);
 		}
 		if (block4_y_bottom > TILE_HEIGHT) {
-			blockMoveStartUp(&block5_x_left, &block5_x_right, &block5_y_top,
+			blockMove(&block5_x_left, &block5_x_right, &block5_y_top,
 					&block5_y_bottom, block5_color);
 		}
 		if (block5_y_bottom > TILE_HEIGHT) {
-			blockMoveStartUp(&block6_x_left, &block6_x_right, &block6_y_top,
+			blockMove(&block6_x_left, &block6_x_right, &block6_y_top,
 					&block6_y_bottom, block6_color);
 		}
 		if (block6_y_bottom > TILE_HEIGHT) {
-			blockMoveStartUp(&block7_x_left, &block7_x_right, &block7_y_top,
+			blockMove(&block7_x_left, &block7_x_right, &block7_y_top,
 					&block7_y_bottom, block7_color);
 		}
 
@@ -580,6 +811,7 @@ void startUpGame(void* pdata) {
 			} else if (ascii == 'K' && relevant_lane == 3) {
 				buttonDetect();
 			} else {
+				OSSemPost(sem_startUp);
 				OSTaskCreateExt(endGame, NULL,
 						(void *) &endGame_stk[TASK_STACKSIZE - 1],
 						endGame_PRIORITY, endGame_PRIORITY, endGame_stk,
@@ -589,6 +821,7 @@ void startUpGame(void* pdata) {
 		customDelay(dly);
 	}
 	OSSemPost(sem_startUp);
+	startUpActive = 0;
 	OSTaskDel(OS_PRIO_SELF);
 }
 
@@ -633,12 +866,12 @@ void game(void* pdata) {
 			block5_y_top;
 
 	blockSelect = rand() % 4;
-	block6_x_left = (blockSelect * TILE_WIDTH) + screenWidth * 0.26, block6_x_right =
+	block6_x_left = (blockSelect * TILE_WIDTH) + screenWidth * 0.25, block6_x_right =
 			block6_x_left + TILE_WIDTH, block6_y_top = screenTop, block6_y_bottom =
 			block6_y_top;
 
 	blockSelect = rand() % 4;
-	block7_x_left = (blockSelect * TILE_WIDTH) + screenWidth * 0.27, block7_x_right =
+	block7_x_left = (blockSelect * TILE_WIDTH) + screenWidth * 0.25, block7_x_right =
 			block7_x_left + TILE_WIDTH, block7_y_top = screenTop, block7_y_bottom =
 			block7_y_top;
 
